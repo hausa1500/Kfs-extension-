@@ -17,6 +17,8 @@ jobs:
       - name: Check JavaScript syntax
         run: |
           for f in $(find . -type f \( -name "*.js" -o -name "*.mjs" \) -not -path './.git/*'); do node --check "$f"; done
+      - name: Verify ChatGPT task lifecycle
+        run: node scripts/verify-chatgpt-lifecycle.mjs
       - name: Validate startup architecture and integrity
         run: node scripts/verify-startup-architecture.mjs
       - name: Package extension
