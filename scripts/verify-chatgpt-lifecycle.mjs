@@ -8,6 +8,7 @@ const users = [];
 const assistants = [];
 const statusMessages = [];
 let generating = false;
+let staleStopControl = false;
 let nextAssistantText = "";
 const listeners = [];
 
@@ -47,7 +48,14 @@ const makeMessage = (text) => ({
   querySelector: () => null,
 });
 const compactControlRect = () => ({ width: 32, height: 32, bottom: 500 });
-const stopButton = { ...visibleElement, getBoundingClientRect: compactControlRect };
+const stopButton = {
+  ...visibleElement,
+  disabled: false,
+  getAttribute(name) {
+    return name === "aria-disabled" && this.disabled ? "true" : null;
+  },
+  getBoundingClientRect: compactControlRect,
+};
 const sendButton = {
   ...visibleElement,
   getBoundingClientRect: compactControlRect,
@@ -55,6 +63,8 @@ const sendButton = {
     composer.value = "";
     users.push(makeMessage("submitted"));
     assistants.push(makeMessage(nextAssistantText));
+    stopButton.disabled = false;
+    staleStopControl = false;
     generating = true;
   },
 };
@@ -65,7 +75,7 @@ const document = {
     if (selector === '[data-message-author-role="user"]') return users;
     if (selector === '[data-message-author-role="assistant"]') return assistants;
     if (selector.includes("stop-button") || selector.includes("Stop") || selector.includes("Parar")) {
-      return generating ? [stopButton] : [];
+      return generating || staleStopControl ? [stopButton] : [];
     }
     return [];
   },
@@ -112,6 +122,9 @@ assert.equal(listeners.length, 2, "V5 bridge should register alongside a retaine
 assert.match(backgroundSource, /type:"KFS_PING_V5"/);
 assert.match(backgroundSource, /ping\?\.version===5/);
 assert.match(backgroundSource, /type:"KFS_SUBMIT_TO_CHATGPT_V5"/);
+const completionCheck = source.slice(source.indexOf("function taskFinished"), source.indexOf("function releaseBuildMonitor"));
+assert.ok(completionCheck.length > 0);
+assert.doesNotMatch(completionCheck, /sendButton/);
 
 const dispatchMessage = (message) => new Promise((resolve) => {
   let responded = false;
@@ -166,6 +179,8 @@ assert.equal(concurrent?.ok, false, "a genuinely active task must remain protect
 assert.match(concurrent?.error || "", /ocupado/i);
 
 generating = false;
+stopButton.disabled = true;
+staleStopControl = true;
 const settledAt = Date.now();
 nextAssistantText = "Second response with a terminal marker";
 await waitForSubmission("prompt two");
