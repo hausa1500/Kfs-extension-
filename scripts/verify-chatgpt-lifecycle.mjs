@@ -46,9 +46,11 @@ const makeMessage = (text) => ({
   textContent: text,
   querySelector: () => null,
 });
-const stopButton = { ...visibleElement };
+const compactControlRect = () => ({ width: 32, height: 32, bottom: 500 });
+const stopButton = { ...visibleElement, getBoundingClientRect: compactControlRect };
 const sendButton = {
   ...visibleElement,
+  getBoundingClientRect: compactControlRect,
   click() {
     composer.value = "";
     users.push(makeMessage("submitted"));
