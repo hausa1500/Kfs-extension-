@@ -3,12 +3,13 @@ import fs from "node:fs";
 import vm from "node:vm";
 
 const source = fs.readFileSync(new URL("../content/chatgpt.js", import.meta.url), "utf8");
+const backgroundSource = fs.readFileSync(new URL("../background.js", import.meta.url), "utf8");
 const users = [];
 const assistants = [];
 const statusMessages = [];
 let generating = false;
 let nextAssistantText = "";
-let listener;
+const listeners = [];
 
 const visibleElement = {
   isConnected: true,
@@ -70,7 +71,7 @@ const document = {
 
 const chrome = {
   runtime: {
-    onMessage: { addListener: (callback) => { listener = callback; } },
+    onMessage: { addListener: (callback) => { listeners.push(callback); } },
     sendMessage: async (message) => {
       statusMessages.push(message);
       return { ok: true };
@@ -78,8 +79,20 @@ const chrome = {
   },
 };
 
+const legacyListener = (message, _sender, sendResponse) => {
+  if (message.type === "KFS_PING") {
+    sendResponse({ ok: true, version: 4 });
+    return;
+  }
+  if (message.type === "KFS_SUBMIT_TO_CHATGPT") {
+    sendResponse({ ok: false, error: "O ChatGPT já está ocupado com uma tarefa KFS." });
+    return true;
+  }
+};
+listeners.push(legacyListener);
+
 vm.runInNewContext(source, {
-  window: {},
+  window: { __KFS_CHATGPT_BRIDGE_V4__: true },
   document,
   chrome,
   HTMLTextAreaElement: MockTextArea,
@@ -93,12 +106,31 @@ vm.runInNewContext(source, {
   clearInterval,
 });
 
-assert.equal(typeof listener, "function", "ChatGPT bridge listener should register");
+assert.equal(listeners.length, 2, "V5 bridge should register alongside a retained V4 listener");
+assert.match(backgroundSource, /type:"KFS_PING_V5"/);
+assert.match(backgroundSource, /ping\?\.version===5/);
+assert.match(backgroundSource, /type:"KFS_SUBMIT_TO_CHATGPT_V5"/);
 
-const dispatch = (prompt) => new Promise((resolve) => {
-  listener({ type: "KFS_SUBMIT_TO_CHATGPT", prompt }, {}, resolve);
+const dispatchMessage = (message) => new Promise((resolve) => {
+  let responded = false;
+  for (const listener of listeners) {
+    listener(message, {}, (response) => {
+      if (responded) return;
+      responded = true;
+      resolve(response);
+    });
+  }
 });
+const dispatch = (prompt) => dispatchMessage({ type: "KFS_SUBMIT_TO_CHATGPT_V5", prompt });
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const legacyPing = await dispatchMessage({ type: "KFS_PING" });
+assert.equal(legacyPing?.version, 4, "a legacy V4 bridge can still answer its old ping");
+const currentPing = await dispatchMessage({ type: "KFS_PING_V5" });
+assert.equal(currentPing?.version, 5, "the updated bridge must answer the versioned ping");
+const legacySubmission = await dispatchMessage({ type: "KFS_SUBMIT_TO_CHATGPT", prompt: "legacy prompt" });
+assert.equal(legacySubmission?.ok, false, "the retained V4 bridge should keep its old busy state");
+assert.match(legacySubmission?.error || "", /ocupado/i);
+
 async function waitForSubmission(prompt, timeout = 5000) {
   const started = Date.now();
   while (Date.now() - started < timeout) {
@@ -135,7 +167,7 @@ generating = false;
 const settledAt = Date.now();
 nextAssistantText = "Second response with a terminal marker";
 await waitForSubmission("prompt two");
-assert.ok(Date.now() - settledAt >= 2000, "marker-free response must settle before releasing the guard");
+assert.ok(Date.now() - settledAt < 1000, "idle UI should release the guard without a fixed settling delay");
 assert.equal(generating, true, "second prompt should begin after marker-free completion");
 
 const overlappingSecond = await dispatch("overlapping prompt two");
